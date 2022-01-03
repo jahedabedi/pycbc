@@ -324,6 +324,61 @@ class TDomainCBCGenerator(BaseCBCGenerator):
         return hp, hc
 
 
+
+class TDomainBoltzmannEchoesGenerator3_0R(BaseGenerator):
+    """Uses an existing SEOBNRv4 waveform to generate an echoes waveform by the method of Abedi et al..
+    """
+    def __init__(self, variable_args=(), **frozen_params):
+        # generate the IMR waveform and cache it
+        apprx = frozen_params['ringdown_approximant']
+        imrargs = frozen_params.copy()
+        imrargs['approximant'] = apprx
+        # ensure we generate with inclination set to 0
+        #imrargs['inclination'] = 0.
+        #hp, hc = waveform.get_td_waveform(**imrargs)
+        #frozen_params["hp"] = hp
+        #frozen_params["hc"] = hc
+        #if len(hc) != len(hp):
+        #    print("hp and hc have unequal length")
+        #frozen_params["omega"] = get_omega(hp, hc)
+        # figure out the merger time
+        #t_merger = float((hp**2 + hc**2).numpy().argmax() * hp.delta_t +
+        #                 hp.start_time)
+        #frozen_params['t_merger'] = t_merger
+        # sample times
+        #frozen_params['sampletimesarray'] = hp.sample_times.numpy()
+        super(TDomainBoltzmannEchoesGenerator3_0R, self).__init__(
+            waveform.get_td_Boltzmann_echoes_waveform3_0R, variable_args=variable_args,
+            **frozen_params)
+
+
+class TDomainBoltzmannEchoesGenerator3(BaseGenerator):
+    """Uses an existing SEOBNRv4 waveform to generate an echoes waveform by the method of Abedi et al..
+    """
+    def __init__(self, variable_args=(), **frozen_params):
+        # generate the IMR waveform and cache it
+        apprx = frozen_params['imr_approximant']
+        imrargs = frozen_params.copy()
+        imrargs['approximant'] = apprx
+        # ensure we generate with inclination set to 0
+        #imrargs['inclination'] = 0.
+        #hp, hc = waveform.get_td_waveform(**imrargs)
+        #frozen_params["hp"] = hp
+        #frozen_params["hc"] = hc
+        #if len(hc) != len(hp):
+        #    print("hp and hc have unequal length")
+        #frozen_params["omega"] = get_omega(hp, hc)
+        # figure out the merger time
+        #t_merger = float((hp**2 + hc**2).numpy().argmax() * hp.delta_t +
+        #                 hp.start_time)
+        #frozen_params['t_merger'] = t_merger
+        # sample times
+        #frozen_params['sampletimesarray'] = hp.sample_times.numpy()
+        super(TDomainBoltzmannEchoesGenerator3, self).__init__(
+            waveform.get_td_Boltzmann_echoes_waveform3, variable_args=variable_args,
+            **frozen_params)
+
+
 class FDomainMassSpinRingdownGenerator(BaseGenerator):
     """Uses ringdown.get_fd_from_final_mass_spin as a generator function to
     create frequency-domain ringdown waveforms with higher modes in the
@@ -859,6 +914,14 @@ def select_waveform_generator(approximant):
         elif approximant == 'TdQNMfromFreqTau':
             return TDomainFreqTauRingdownGenerator
 
+    # check if time-domain Boltzmann echo waveform3_0R
+    elif approximant in waveform.Boltzmann_echoes_apprx3_0R:
+        return TDomainBoltzmannEchoesGenerator3_0R
+    
+    # check if time-domain Boltzmann echo waveform3
+    elif approximant in waveform.Boltzmann_echoes_apprx3:
+        return TDomainBoltzmannEchoesGenerator3
+    
     # otherwise waveform approximant is not supported
     else:
         raise ValueError("%s is not a valid approximant." % approximant)

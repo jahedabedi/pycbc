@@ -42,7 +42,19 @@ from .spa_tmplt import spa_tmplt, spa_tmplt_norm, spa_tmplt_end, \
                       spa_tmplt_precondition, spa_amplitude_factor, \
                       spa_length_in_time
 from six.moves import range as xrange
-
+from pycbc.waveform.echoeswaveformPComega_pycbc import truncfunc
+from pycbc.waveform.echoeswaveformPComega_pycbc import get_omega
+from pycbc.conversions import final_mass_from_initial
+from pycbc.conversions import final_spin_from_initial
+#from pycbc.waveform import get_td_from_final_mass_spin
+#from pycbc.waveform import ringdown_td_approximants
+#from .ringdown import ringdown_td_approximants
+#from . import ringdown.ringdown_td_approximants
+import scipy.special
+from mpmath import *
+mp.pretty = True
+from scipy.special import gamma
+from scipy.interpolate import interp1d
 
 class NoWaveformError(Exception):
     """This should be raised if generating a waveform would just result in all
@@ -68,6 +80,7 @@ default_args = \
 
 default_sgburst_args = {'eccentricity':0, 'polarization':0}
 sgburst_required_args = ['q','frequency','hrss']
+td_required_args = parameters.cbc_td_required
 
 # td, fd, filter waveforms generated on the CPU
 _lalsim_td_approximants = {}
@@ -786,6 +799,267 @@ def get_sgburst_waveform(template=None, **kwargs):
 
     return _lalsim_sgburst_waveform(**input_params)
 
+
+
+
+
+
+
+def get_td_Boltzmann_echoes_waveform3_0R(template=None, **kwargs):
+    """Generates an IMR waveform with echoes."""
+    input_params = props(template, required_args=td_required_args, **kwargs)
+    # call get_td_waveform to generate the IMR waveform
+    #inclination = input_params.pop('inclination')
+    # generate the waveform
+    apprx = input_params['ringdown_approximant']
+    harmonics = input_params['harmonics']
+    imrargs = input_params.copy()
+    imrargs['approximant'] = apprx
+    #print(imrargs)
+    hp, hc = pycbc.waveform.ringdown.get_td_from_final_mass_spin(approximant='TdQNMfromFinalMassSpin',harmonics='spheroidal',lmns=['222', '331'],final_mass=input_params['final_mass'],final_spin=input_params['final_spin'],inclination=input_params['inclination'],amp220=input_params['amp220'],amp221=input_params['amp221'],amp330=input_params['amp330'],phi220=input_params['phi220'],phi221=input_params['phi221'],phi330=input_params['phi330'],delta_t=input_params['delta_t'],delta_f=input_params['delta_f'],coa_phase=input_params['coa_phase'],f_lower=input_params['f_lower'],f_ref=input_params['f_ref'])
+    hp_numpy = hp.numpy()
+    hc_numpy = hc.numpy()
+    # we'll only keep the bits that are effectively non-zero; we'll consider
+    # this to be the place where the waveform has fallen to threshold * peak
+    # amplitude
+    ampsq = hp_numpy**2 + hc_numpy**2
+    threshold = 1e-4
+    nzidx = numpy.where(ampsq > threshold**2 * ampsq.max())[0]
+    first_idx = nzidx[0]
+    last_idx = nzidx[-1] + 1  # so we include the last point
+    hp_numpy = hp_numpy[first_idx:last_idx]
+    hc_numpy = hc_numpy[first_idx:last_idx]
+    # obtain the waveform parameters
+    # Check echo model (if it is BNS or Collapse get final mass Mf)
+    try:
+        Mf = input_params["final_mass"]
+    except KeyError:
+        Mf = final_mass_from_initial(imrargs['mass1'], imrargs['mass2'], imrargs['spin1x'], imrargs['spin1y'], imrargs['spin1z'], imrargs['spin2x'], imrargs['spin2y'], imrargs['spin2z'])
+
+    try:
+        af = input_params["final_spin"]
+    except KeyError:
+        af = final_spin_from_initial(imrargs['mass1'], imrargs['mass2'], imrargs['spin1x'], imrargs['spin1y'], imrargs['spin1z'], imrargs['spin2x'], imrargs['spin2y'], imrargs['spin2z'])
+    # get the echo parameters
+    amplitude = input_params["amplitude"]
+    # Consider look elsewhere effect by time_shift moving the overall echo waveform
+    try:
+        time_shift = input_params["time_shift"]
+    except KeyError:
+        time_shift = 0
+
+    overall_phase = input_params["overall_phase"]
+    la = input_params["la"]
+    n_echoes = input_params["n_echoes"]
+    # mode of the GW wave
+    try:
+        mode = input_params["mode"]
+    except KeyError:
+        mode = 2
+    # sign of the Boltzmann factor
+    try:
+        sign = input_params["sign"]
+    except KeyError:
+        sign = +1
+    #-- constants
+    # speed of light:
+    clight = 2.99792458e8                # m/s
+    # Newton's gravitational constant
+    G = 6.67259e-11                      # m^3/kg/s^2
+    # solar mass
+    MSol = 1.989e30                      # kg
+    # Planck mass
+    Mp=2.17647e-8                        # kg
+    # time delay between echoes
+    b=(1-af**2)**0.5
+    del_t_echo = 4*(G/clight**3)*Mf*MSol*((1+b)/b)*(   (numpy.log(Mf*MSol/Mp)) + la  )
+    # black hole angular momentum
+    a=af*Mf*MSol
+    rplus=Mf*MSol+numpy.sqrt((Mf*MSol)**2-a**2)
+    Omega_H=a/(rplus**2 + a**2)/(G/(clight**3))
+    # black hole Hawking temperature
+    T_H=((numpy.sqrt((Mf*MSol)**2 - a**2))/(2*Mf*MSol*rplus))/(2*numpy.pi*(G/(clight**3)))
+    # add n_echoes echoes + time_shift time length zero array to the end of the waveform to avoid leaking achoes from right edge of the series.
+    timestep = hp.delta_t
+    hparray = numpy.zeros(last_idx+int((n_echoes+1)*del_t_echo/timestep) + int(time_shift/timestep) )
+    hcarray = numpy.zeros(last_idx+int((n_echoes+1)*del_t_echo/timestep) + int(time_shift/timestep) )
+    hparray[first_idx:last_idx] =hp_numpy
+    hcarray[first_idx:last_idx] =hc_numpy
+    # Now we build Boltzmann echoes waveform
+    length=len(hparray[first_idx:])
+    Omega=2.0*numpy.pi*(numpy.arange(length)+1)/(length*timestep)
+    # build Boltzmann echo waveform
+    #hp_echo = numpy.fft.ifft( numpy.exp(1j*overall_phase)*numpy.exp(-1j*Omega*time_shift)*(numpy.fft.fft(hparray[first_idx:]))*(1.0-(sign**n_echoes)*numpy.exp(-n_echoes*abs((Omega-mode*Omega_H)/(2*T_H)) - 1j*n_echoes*Omega*del_t_echo ))/((sign**-1)*numpy.exp(abs((Omega-mode*Omega_H)/(2*T_H)) + 1j*Omega*del_t_echo ) -1.0 ) )
+    
+    hp_echo = numpy.fft.ifft( numpy.exp(1j*overall_phase)*numpy.exp(-1j*Omega*time_shift)*(numpy.fft.fft(hparray[first_idx:])) * ( sign*numpy.exp(-abs((Omega-mode*Omega_H)/(2*T_H)) - 1j*Omega*del_t_echo )  )  * (1 + sign*numpy.exp(-abs((Omega-mode*Omega_H)/(2*T_H)) - 1j*Omega*del_t_echo ) ) )
+    
+    hc_echo = numpy.fft.ifft( numpy.exp(1j*overall_phase)*numpy.exp(-1j*Omega*time_shift)*(numpy.fft.fft(hcarray[first_idx:])) * ( sign*numpy.exp(-abs((Omega-mode*Omega_H)/(2*T_H)) - 1j*Omega*del_t_echo )  )  * (1 + sign*numpy.exp(-abs((Omega-mode*Omega_H)/(2*T_H)) - 1j*Omega*del_t_echo ) ) )
+    
+    #hc_echo = numpy.fft.ifft( numpy.exp(1j*overall_phase)*numpy.exp(-1j*Omega*time_shift)*(numpy.fft.fft(hcarray[first_idx:]))*(1.0-(sign**n_echoes)*numpy.exp(-n_echoes*abs((Omega-mode*Omega_H)/(2*T_H)) - 1j*n_echoes*Omega*del_t_echo ))/((sign**-1)*numpy.exp(abs((Omega-mode*Omega_H)/(2*T_H)) + 1j*Omega*del_t_echo ) -1.0 ) )
+    
+    #The frequency domain transformation always carry immaginary errors in instead of real values
+    hp_echo=numpy.real(hp_echo)
+    hc_echo=numpy.real(hc_echo)
+    try:
+        include_main_event = input_params["include_main_event"]
+    except KeyError:
+        include_main_event = True
+    if include_main_event == False:
+        hparray=0*hparray
+        hcarray=0*hcarray
+    hparray[last_idx:] = hparray[last_idx:] + amplitude*hp_echo[last_idx-first_idx:]
+    hcarray[last_idx:] = hcarray[last_idx:] + amplitude*hc_echo[last_idx-first_idx:]
+    hp = TimeSeries(hparray, delta_t=timestep, epoch=hp.start_time)
+    hc = TimeSeries(hcarray, delta_t=timestep, epoch=hc.start_time)
+    return hp, hc
+
+
+# add echoes to cpu_td
+Boltzmann_echoes_apprx3_0R = 'TDBechoes3_0R'
+cpu_td[Boltzmann_echoes_apprx3_0R] = get_td_Boltzmann_echoes_waveform3_0R
+
+
+
+
+
+
+
+
+
+def get_td_Boltzmann_echoes_waveform3(template=None, **kwargs):
+    """Generates an IMR waveform with echoes."""
+    input_params = props(template, required_args=td_required_args, **kwargs)
+    # call get_td_waveform to generate the IMR waveform
+    #inclination = input_params.pop('inclination')
+    # generate the IMR waveform
+    apprx = input_params['imr_approximant']
+    imrargs = input_params.copy()
+    imrargs['approximant'] = apprx
+    hp, hc = get_td_waveform(**imrargs)
+    # zero-pad the waveforms out to the nearest power of 2 to do an FFT rather than an FT
+    #hp.resize(ceilpow2(len(hp)))
+    #hc.resize(ceilpow2(len(hc)))
+    hp_numpy = hp.numpy()
+    hc_numpy = hc.numpy()
+    # we'll only keep the bits that are effectively non-zero; we'll consider
+    # this to be the place where the waveform has fallen to threshold * peak
+    # amplitude
+    ampsq = hp_numpy**2 + hc_numpy**2
+    threshold = 1e-4
+    nzidx = numpy.where(ampsq > threshold**2 * ampsq.max())[0]
+    first_idx = nzidx[0]
+    last_idx = nzidx[-1] + 1  # so we include the last point
+    hp_numpy = hp_numpy[first_idx:last_idx]
+    hc_numpy = hc_numpy[first_idx:last_idx]
+    # obtain the waveform parameters
+    # Check echo model (if it is BNS or Collapse get final mass Mf)
+    try:
+        Mf = input_params["final_mass"]
+    except KeyError:
+        Mf = final_mass_from_initial(imrargs['mass1'], imrargs['mass2'], imrargs['spin1x'], imrargs['spin1y'], imrargs['spin1z'], imrargs['spin2x'], imrargs['spin2y'], imrargs['spin2z'])
+    
+    try:
+        af = input_params["final_spin"]
+    except KeyError:
+        af = final_spin_from_initial(imrargs['mass1'], imrargs['mass2'], imrargs['spin1x'], imrargs['spin1y'], imrargs['spin1z'], imrargs['spin2x'], imrargs['spin2y'], imrargs['spin2z'])
+    
+    #print 'Mf and af =', Mf, af
+    #print imrargs['mass1'], imrargs['mass2'], imrargs['spin1x'], imrargs['spin1y'], imrargs['spin1z'], imrargs['spin2x'], imrargs['spin2y'], imrargs['spin2z']
+    # get the echo parameters
+    try:
+        amplitude_plus = input_params["amplitude"]
+        amplitude_cross = input_params["amplitude"]
+    except KeyError:
+        amplitude_plus = input_params["amplitude_plus"]
+        amplitude_cross = input_params["amplitude_cross"]
+    # Consider look elsewhere effect by time_shift moving the overall echo waveform
+    try:
+        time_shift = input_params["time_shift"]
+    except KeyError:
+        time_shift = 0
+    try:
+        nonlinear_terror = input_params["nonlinear_terror"]
+    except KeyError:
+        nonlinear_terror = 0
+    try:
+        n_del_t_echo = input_params["n_del_t_echo"]
+    except KeyError:
+        n_del_t_echo = 1
+    
+    overall_phase = input_params["overall_phase"]
+    la = input_params["la"]
+    alpha = input_params["alpha"]
+    n_echoes = input_params["n_echoes"]
+    # Change in Sky Location by change in plus and cross polarization time shift (Has no unit. Value of 0 means both are identical and 0.1 means del_t_echo for plus is by factor 1.1 bigger compared to cross)
+    try:
+        polarization_shift = input_params["polarization_shift"]
+    except KeyError:
+        polarization_shift = 0.0
+    # mode of the GW wave
+    try:
+        mode = input_params["mode"]
+    except KeyError:
+        mode = 2
+    # sign of the Boltzmann factor
+    try:
+        sign = input_params["sign"]
+    except KeyError:
+        sign = +1
+    #-- constants
+    # speed of light:
+    clight = 2.99792458e8                # m/s
+    # Newton's gravitational constant
+    G = 6.67259e-11                      # m^3/kg/s^2
+    # solar mass
+    MSol = 1.989e30                      # kg
+    # Planck mass
+    Mp=2.17647e-8                        # kg
+    # time delay between echoes
+    b=(1-af**2)**0.5
+    del_t_echo = n_del_t_echo * 4*(G/clight**3)*Mf*MSol*((1+b)/b)*(   (numpy.log(Mf*MSol/Mp)) + la  )
+    #time shift for non linear effect on first echo
+    time_shift = nonlinear_terror*del_t_echo
+    # black hole angular momentum
+    a=af*Mf*MSol
+    rplus=Mf*MSol+numpy.sqrt((Mf*MSol)**2-a**2)
+    Omega_H=a/(rplus**2 + a**2)/(G/(clight**3))
+    # black hole Hawking temperature
+    T_H=((numpy.sqrt((Mf*MSol)**2 - a**2))/(2*Mf*MSol*rplus))/(2*numpy.pi*(G/(clight**3)))
+    # add n_echoes echoes + time_shift time length zero array to the end of the waveform to avoid leaking achoes from right edge of the series.
+    timestep = hp.delta_t
+    hparray = numpy.zeros(last_idx+int((n_echoes+1)*del_t_echo/timestep) + int(time_shift/timestep) )
+    hcarray = numpy.zeros(last_idx+int((n_echoes+1)*del_t_echo/timestep) + int(time_shift/timestep) )
+    hparray[first_idx:last_idx] =hp_numpy
+    hcarray[first_idx:last_idx] =hc_numpy
+    # Now we build Boltzmann echoes waveform
+    length=len(hparray[first_idx:])
+    Omega=2.0*numpy.pi*(numpy.arange(length)+1)/(length*timestep)
+    # build Boltzmann echo waveform
+    hp_echo = numpy.fft.ifft( numpy.exp(1j*overall_phase)*numpy.exp(-1j*Omega*time_shift)*(numpy.fft.fft(hparray[first_idx:]))*(1.0-(sign**n_echoes)*numpy.exp(-n_echoes*abs((Omega-mode*Omega_H)/(2*alpha*T_H)) - 1j*n_echoes*Omega*del_t_echo*(1+polarization_shift/2.0) ))/((sign**-1)*numpy.exp(abs((Omega-mode*Omega_H)/(2*alpha*T_H)) + 1j*Omega*del_t_echo*(1+polarization_shift/2.0) ) -1.0 ) )
+    hc_echo = numpy.fft.ifft( numpy.exp(1j*overall_phase)*numpy.exp(-1j*Omega*time_shift)*(numpy.fft.fft(hcarray[first_idx:]))*(1.0-(sign**n_echoes)*numpy.exp(-n_echoes*abs((Omega-mode*Omega_H)/(2*alpha*T_H)) - 1j*n_echoes*Omega*del_t_echo*(1-polarization_shift/2.0) ))/((sign**-1)*numpy.exp(abs((Omega-mode*Omega_H)/(2*alpha*T_H)) + 1j*Omega*del_t_echo*(1-polarization_shift/2.0) ) -1.0 ) )
+    #The frequency domain transformation always carry immaginary errors in instead of real values
+    hp_echo=numpy.real(hp_echo)
+    hc_echo=numpy.real(hc_echo)
+    try:
+        include_main_event = input_params["include_main_event"]
+    except KeyError:
+        include_main_event = 'True'
+    if include_main_event == 'False':
+        hparray=0*hparray
+        hcarray=0*hcarray
+    hparray[last_idx:] = hparray[last_idx:] + amplitude_plus*hp_echo[last_idx-first_idx:]
+    hcarray[last_idx:] = hcarray[last_idx:] + amplitude_cross*hc_echo[last_idx-first_idx:]
+    hp = TimeSeries(hparray, delta_t=timestep, epoch=hp.start_time)
+    hc = TimeSeries(hcarray, delta_t=timestep, epoch=hc.start_time)
+    return hp, hc
+
+
+# add echoes to cpu_td
+Boltzmann_echoes_apprx3 = 'TDBechoes3'
+cpu_td[Boltzmann_echoes_apprx3] = get_td_Boltzmann_echoes_waveform3
+
+
+
 # Waveform filter routines ###################################################
 
 # Organize Filter Generators
@@ -1171,4 +1445,5 @@ __all__ = ["get_td_waveform", "get_fd_waveform", "get_fd_waveform_sequence",
            "print_sgburst_approximants", "sgburst_approximants",
            "td_waveform_to_fd_waveform", "get_two_pol_waveform_filter",
            "NoWaveformError", "FailedWaveformError", "get_td_waveform_from_fd",
-           'cpu_fd', 'cpu_td', '_filter_time_lengths']
+           'cpu_fd', 'cpu_td', '_filter_time_lengths', 'get_td_Boltzmann_echoes_waveform3_0R',
+           'get_td_Boltzmann_echoes_waveform3']
