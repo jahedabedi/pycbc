@@ -42,8 +42,8 @@ from .spa_tmplt import spa_tmplt, spa_tmplt_norm, spa_tmplt_end, \
                       spa_tmplt_precondition, spa_amplitude_factor, \
                       spa_length_in_time
 from six.moves import range as xrange
-from pycbc.waveform.echoeswaveformPComega_pycbc import truncfunc
-from pycbc.waveform.echoeswaveformPComega_pycbc import get_omega
+#from pycbc.waveform.echoeswaveformPComega_pycbc import truncfunc
+#from pycbc.waveform.echoeswaveformPComega_pycbc import get_omega
 from pycbc.conversions import final_mass_from_initial
 from pycbc.conversions import final_spin_from_initial
 #from pycbc.waveform import get_td_from_final_mass_spin
@@ -51,8 +51,8 @@ from pycbc.conversions import final_spin_from_initial
 #from .ringdown import ringdown_td_approximants
 #from . import ringdown.ringdown_td_approximants
 import scipy.special
-from mpmath import *
-mp.pretty = True
+#from mpmath import *
+#mp.pretty = True
 from scipy.special import gamma
 from scipy.interpolate import interp1d
 
