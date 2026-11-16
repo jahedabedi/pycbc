@@ -37,6 +37,7 @@ import lal
 from pycbc.detector import Detector
 import pycbc.cosmology
 from pycbc import neutron_stars as ns
+from pycbc.constants import YRJUL_SI, MSUN_SI, MTSUN_SI, C_SI, G_SI, PI
 
 from .coordinates import (
     spherical_to_cartesian as _spherical_to_cartesian,
@@ -1161,11 +1162,69 @@ def get_lm_f0tau(mass, spin, l, m, n=0, which='both'):
     if not (getf0 and gettau):
         out = out[0]
     return out
+def calculate_horizon_mode_freq_tau(final_mass, final_spin, nmode, m):
+    """Calculate horizon mode frequency and damping time.
 
+    Parameters
+    ----------
+    final_mass : float
+        Final black hole mass in solar masses.
+    final_spin : float
+        Dimensionless spin of the final black hole.
+    nmode : int
+        Mode number integer, nmode*kappa (minimum value is 1)
+    m : int
+        Mode m value integer, m*Omega_H
+
+    Returns
+    -------
+    f_hm : float
+        Horizon mode frequency in Hz.
+    tau_hm : float
+        Horizon mode damping time in seconds.
+    """
+
+    # Calculate horizon mode parameters
+    M = final_mass * MSUN_SI  # Convert to kg
+    a = final_spin * M
+
+    # Calculate r_plus (outer event horizon)
+    rplus = M + numpy.sqrt((M)**2 - a**2)
+
+    # Calculate Omega_H and Kappa
+    Omega_H = a / (rplus**2 + a**2) / (G_SI / (C_SI**3))
+    Kappa = (numpy.sqrt((M)**2 - a**2)) / (2 * M * rplus) / (G_SI / (C_SI**3))
+
+    # Horizon mode frequency and damping time
+    f_hm = m * Omega_H / (2 * numpy.pi)  # Convert to Hz
+    tau_hm = 1.0 / (nmode * Kappa)
+
+    return f_hm, tau_hm
 
 def get_lm_f0tau_allmodes(mass, spin, modes):
     """Returns a dictionary of all of the frequencies and damping times for the
     requested modes.
+
+    The modes generated for a request 'lmN' are ordered as follows: the
+    fundamental quasinormal mode (n = 0), the first overtone (n = 1), and then
+    the horizon modes (n = 2, 3, ...). The switch is hard-coded at n = 2:
+
+    * n < 2  -> standard quasinormal-mode analysis, using ``get_lm_f0tau``.
+                These are the fundamental mode and the first overtone only.
+    * n >= 2 -> horizon-mode analysis, using
+                ``calculate_horizon_mode_freq_tau`` with ladder index
+                j = n - 1. These are not quasinormal overtones.
+
+    In other words, at most one genuine overtone (n = 1) is ever returned.
+    Every mode beyond it is a horizon mode, with
+
+        f0  = m * Omega_H / (2 * pi)
+        tau = 1 / (j * kappa)
+
+    where Omega_H is the horizon angular velocity, kappa is the surface
+    gravity, and j = n - 1 = 1, 2, ... is the horizon ladder index. This is
+    the fork-specific extension used for the horizon-mode ringdown analysis;
+    upstream PyCBC returns quasinormal overtones for all n.
 
     Parameters
     ----------
@@ -1176,30 +1235,53 @@ def get_lm_f0tau_allmodes(mass, spin, modes):
     modes : list of str
         The modes to get. Each string in the list should be formatted
         'lmN', where l (m) is the l (m) index of the harmonic and N is the
-        number of overtones to generate (note, N is not the index of the
-        overtone).
+        number of modes to generate. N is not the index of the last mode;
+        the generated mode indices are n = 0, ..., N - 1. Consequently:
+
+        * 'lm1' -> n = 0 only              (fundamental, QNM)
+        * 'lm2' -> n = 0, 1                (fundamental + first overtone, QNM)
+        * 'lm3' -> n = 0, 1, 2             (QNM 0, QNM 1, horizon j = 1)
+        * 'lm4' -> n = 0, 1, 2, 3          (QNM 0, QNM 1, horizon j = 1, 2)
 
     Returns
     -------
     f0 : dict
         Dictionary mapping the modes to the frequencies. The dictionary keys
         are 'lmn' string, where l (m) is the l (m) index of the harmonic and
-        n is the index of the overtone. For example, '220' is the l = m = 2
-        mode and the 0th overtone.
+        n is the mode index. For example, '220' is the l = m = 2 fundamental
+        mode, '221' is the l = m = 2 first overtone, and '222' is the l = m = 2
+        first horizon mode (j = 1).
     tau : dict
         Dictionary mapping the modes to the damping times. The keys are the
         same as ``f0``.
+
+    Notes
+    -----
+    Because of the switch at n = 2, the key '222' denotes the first horizon
+    mode (j = 1), not the second overtone. The second and higher overtones are
+    therefore not accessible through this function. Callers that want a
+    two-mode model should request the keys explicitly:
+
+    * fundamental + first overtone:      modes='222', use keys {'220', '221'}
+    * fundamental + first horizon mode:  modes='223', use keys {'220', '222'}
     """
     f0, tau = {}, {}
     for lmn in modes:
         key = '{}{}{}'
         l, m, nmodes = int(lmn[0]), int(lmn[1]), int(lmn[2])
         for n in range(nmodes):
-            tmp_f0, tmp_tau = get_lm_f0tau(mass, spin, l, m, n)
-            f0[key.format(l, abs(m), n)] = tmp_f0
-            tau[key.format(l, abs(m), n)] = tmp_tau
+            if n < 2:
+                # n = 0: fundamental QNM; n = 1: first overtone QNM
+                tmp_f0, tmp_tau = get_lm_f0tau(mass, spin, l, m, n)
+                f0[key.format(l, abs(m), n)] = tmp_f0
+                tau[key.format(l, abs(m), n)] = tmp_tau
+            else:
+                # n >= 2: horizon mode with ladder index j = n - 1
+                tmp_f0, tmp_tau = calculate_horizon_mode_freq_tau(
+                    mass, spin, nmode=n - 1, m=m)
+                f0[key.format(l, abs(m), n)] = tmp_f0
+                tau[key.format(l, abs(m), n)] = tmp_tau
     return f0, tau
-
 
 def freq_from_final_mass_spin(final_mass, final_spin, l=2, m=2, n=0):
     """Returns QNM frequency for the given mass and spin and mode.
